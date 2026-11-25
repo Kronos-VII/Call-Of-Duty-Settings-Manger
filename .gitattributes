@@ -1,0 +1,6 @@
+# keep Windows scripts with Windows line endings no matter how git is configured
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ico binary
+*.jpg binary
+*.png binary

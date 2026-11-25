@@ -1,0 +1,14 @@
+# build output
+dist/
+release/
+
+# Wallpapers are Activision's artwork. They stay on your PC and out of the public repo by default.
+# To publish them anyway, delete the next four lines.
+assets/*.jpg
+assets/*.jpeg
+assets/*.png
+assets/*.webp
+!assets/.gitkeep
+
+node_modules/
+Thumbs.db
