@@ -22,7 +22,7 @@ if not exist "src\00-head.html" (
 )
 
 set "MISSING="
-for %%F in (00-head.html style.css 10-mid.html core.js config.js data.js art.js sys.js ui.js 99-tail.html) do (
+for %%F in (00-head.html style.css 10-mid.html core.js config.js data.js sys.js ui.js 99-tail.html) do (
   if not exist "src\%%F" set "MISSING=!MISSING! %%F"
 )
 if defined MISSING (
@@ -37,8 +37,8 @@ if defined MISSING (
 if not exist "dist" mkdir "dist"
 if exist "dist\CoD-Configurator.hta" del /q "dist\CoD-Configurator.hta"
 
-rem Order matters: head, CSS, middle, scripts (core, config, data, art, sys, ui), tail.
-copy /b "src\00-head.html"+"src\style.css"+"src\10-mid.html"+"src\core.js"+"src\config.js"+"src\data.js"+"src\art.js"+"src\sys.js"+"src\ui.js"+"src\99-tail.html" "dist\CoD-Configurator.hta" >nul
+rem Order matters: head, CSS, middle, scripts (core, config, data, sys, ui), tail.
+copy /b "src\00-head.html"+"src\style.css"+"src\10-mid.html"+"src\core.js"+"src\config.js"+"src\data.js"+"src\sys.js"+"src\ui.js"+"src\99-tail.html" "dist\CoD-Configurator.hta" >nul
 if not exist "dist\CoD-Configurator.hta" (
   echo.
   echo  [ERROR] Could not create dist\CoD-Configurator.hta
@@ -48,9 +48,9 @@ if not exist "dist\CoD-Configurator.hta" (
   exit /b 1
 )
 
-rem Wallpapers live next to the app in dist\assets
+rem Game pictures live next to the app in dist\assets
 if not exist "dist\assets" mkdir "dist\assets"
-for %%E in (jpg jpeg png) do (
+for %%E in (jpg jpeg png ico) do (
   if exist "assets\*.%%E" copy /y "assets\*.%%E" "dist\assets\" >nul
 )
 
@@ -59,9 +59,14 @@ set "CSC="
 if exist "%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not defined CSC if exist "%windir%\Microsoft.NET\Framework\v4.0.30319\csc.exe" set "CSC=%windir%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if exist "dist\CoD-Configurator.exe" del /q "dist\CoD-Configurator.exe"
+set "ICO=tools\app.ico"
+if exist "assets\app.ico" set "ICO=assets\app.ico"
+rem launcher.cs also gives the window a dark title bar; launcher-basic.cs is the plain fallback if that one ever fails to compile.
 if defined CSC (
-  "!CSC!" /nologo /target:winexe /out:"dist\CoD-Configurator.exe" /win32icon:"tools\app.ico" /r:System.Windows.Forms.dll "tools\launcher.cs" >"dist\exe-build.log" 2>&1
-  if not exist "dist\CoD-Configurator.exe" "!CSC!" /nologo /target:winexe /out:"dist\CoD-Configurator.exe" /r:System.Windows.Forms.dll "tools\launcher.cs" >"dist\exe-build.log" 2>&1
+  "!CSC!" /nologo /target:winexe /out:"dist\CoD-Configurator.exe" /win32icon:"!ICO!" /r:System.Windows.Forms.dll "tools\launcher.cs" >"dist\exe-build.log" 2>&1
+  if not exist "dist\CoD-Configurator.exe" "!CSC!" /nologo /target:winexe /out:"dist\CoD-Configurator.exe" /r:System.Windows.Forms.dll "tools\launcher.cs" >>"dist\exe-build.log" 2>&1
+  if not exist "dist\CoD-Configurator.exe" "!CSC!" /nologo /target:winexe /out:"dist\CoD-Configurator.exe" /win32icon:"!ICO!" /r:System.Windows.Forms.dll "tools\launcher-basic.cs" >>"dist\exe-build.log" 2>&1
+  if not exist "dist\CoD-Configurator.exe" "!CSC!" /nologo /target:winexe /out:"dist\CoD-Configurator.exe" /r:System.Windows.Forms.dll "tools\launcher-basic.cs" >>"dist\exe-build.log" 2>&1
 )
 
 echo.
@@ -71,8 +76,10 @@ echo.
 
 if /i "%~1"=="nolaunch" goto :done
 echo  Opening the app...
-rem Opened through mshta directly, so it works even when Windows has no program linked to .hta files.
-if exist "%windir%\System32\mshta.exe" (
+rem Opened through the .exe (dark title bar), or through mshta directly, so it works even when Windows has no program linked to .hta files.
+if exist "dist\CoD-Configurator.exe" (
+  start "" "!CD!\dist\CoD-Configurator.exe"
+) else if exist "%windir%\System32\mshta.exe" (
   start "" "%windir%\System32\mshta.exe" "!CD!\dist\CoD-Configurator.hta"
 ) else (
   echo  [ERROR] Windows' HTA host mshta.exe was not found on this PC.
