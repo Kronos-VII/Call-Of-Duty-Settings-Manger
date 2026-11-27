@@ -1,4 +1,7 @@
 @echo off
+rem Double-clicked: run again inside a window that stays open, so every message can be read.
+if not "%~1"=="--inner" cmd /k call "%~f0" --inner & exit /b
+
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 title CoD Configurator - Push to GitHub
@@ -70,9 +73,11 @@ if "!R!"=="!R:/=!" (
 
 echo.
 echo  Building...
-call build.bat nolaunch >nul
+cmd /c build.bat nolaunch > "dist-build.log" 2>&1
+if exist "dist\CoD-Configurator.hta" del /q "dist-build.log" >nul 2>nul
 if not exist "dist\CoD-Configurator.hta" (
-  echo  Build failed.
+  echo  Build failed. What build.bat said:
+  type "dist-build.log"
   pause
   exit /b 1
 )
@@ -83,35 +88,55 @@ set /p "MSG=What changed? (Enter = Update): "
 if not defined MSG set "MSG=Update"
 set "MSG=!MSG:"=!"
 
+rem Line endings are handled by .gitattributes; this stops the "LF will be replaced by CRLF" warnings.
+git config core.autocrlf false
+git config core.safecrlf false
+
+rem Clear anything left over from an earlier push that stopped halfway.
+git rebase --abort >nul 2>nul
+git merge --abort >nul 2>nul
+if exist ".git\rebase-merge" rmdir /s /q ".git\rebase-merge"
+if exist ".git\rebase-apply" rmdir /s /q ".git\rebase-apply"
+
 git add -A
-git diff --cached --quiet
-if errorlevel 1 (
-  git commit -m "!MSG!"
-) else (
-  echo  Nothing new to commit.
-)
+set "CHANGED="
+git diff --cached --quiet || set "CHANGED=1"
+if defined CHANGED git commit -q -m "!MSG!"
+if not defined CHANGED echo  Nothing new to commit.
 
 echo.
 echo  Pushing to !R! ...
 git push -u origin main
-if errorlevel 1 (
-  echo.
-  echo  The first push was refused, usually because the GitHub repo already has a README.
-  echo  Merging it in and trying again...
-  git pull --rebase origin main --allow-unrelated-histories
-  git push -u origin main
-)
-if errorlevel 1 (
-  echo.
-  echo  Push failed. Check that the repo exists, that you are signed in to GitHub
-  echo  ^(a sign-in window opens the first time^), and that you can write to it.
-  pause
-  exit /b 1
-)
+if not errorlevel 1 goto :pushed
 
+rem GitHub has commits this folder does not have (pushed from another copy, or edited on the website).
+rem Join the two histories but keep this folder's files exactly as they are. GitHub's commits stay in the
+rem history, so nothing is lost and no force-push is needed.
+echo.
+echo  GitHub has changes that are not in this folder. Joining them so this folder's version is published.
+echo  GitHub's earlier version stays in the history, nothing is deleted.
+git fetch origin main
+if errorlevel 1 goto :pushfail
+git merge -s ours --allow-unrelated-histories --no-edit -m "Publish this folder's version (earlier GitHub changes kept in history)" FETCH_HEAD
+if errorlevel 1 goto :pushfail
+git push -u origin main
+if errorlevel 1 goto :pushfail
+
+:pushed
 echo.
 echo  Done. Your code is on GitHub: https://github.com/!R!
 echo  To publish a new version to users, run release.bat
 echo.
 pause
 endlocal
+exit
+
+:pushfail
+git rebase --abort >nul 2>nul
+git merge --abort >nul 2>nul
+echo.
+echo  Push failed. Read the git message above. Check that you are signed in to GitHub
+echo  - a sign-in window opens the first time - and that you can write to the repo.
+pause
+endlocal
+exit /b 1
