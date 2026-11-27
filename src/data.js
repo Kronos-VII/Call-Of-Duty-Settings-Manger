@@ -1,7 +1,7 @@
 /* data.js - games, presets, sources, fact-check. ES5, ASCII only. Edit freely: this is the only place settings values live.
    Values are the MAJORITY of the guides listed per game (fetched Nov 2026). Where guides disagree, the note says so. */
 var Data = (function () {
-  var VERSION = '1.2.0';
+  var VERSION = '1.3.0';
 
   var FILES = {
     cod24: 'Black Ops 6 era file',
@@ -98,13 +98,13 @@ var Data = (function () {
   }
 
   var PRESET_INFO = {
-    fps: { label: 'BEST FPS', blurb: 'The competitive profile: expensive effects trimmed, textures kept sensible, all blur and ray tracing off. Values are what most of the listed guides agree on.' },
-    balanced: { label: 'BALANCED', blurb: 'The "balanced" tier from Hone and FpsGen: high refresh without the potato look.' }
+    fps: { label: 'Best FPS', blurb: 'The competitive profile: expensive effects trimmed, textures kept sensible, all blur and ray tracing off. Values are what most of the listed guides agree on.' },
+    balanced: { label: 'Balanced', blurb: 'The "balanced" tier from Hone and FpsGen: high refresh without the potato look.' }
   };
 
   var GAMES = [
     {
-      id: 'wz', name: 'WARZONE', tag: 'BATTLE ROYALE // RESURGENCE', art: 'wz',
+      id: 'wz', name: 'WARZONE', tag: 'Battle royale and Resurgence', art: 'wz',
       config: true, codes: ['cod25', 'cod24'],
       blurb: 'Warzone shares the Call of Duty engine, so the worker-count tweak is applied to your newest Black Ops settings file.',
       sourceNote: 'Settings from Fpstweak (Aug 2026), setup.gg (Sep 2026), Charlie Intel (Feb 2025) and Dexerto (Nov 2026, FOV only). Warzone menus change per season.',
@@ -116,7 +116,7 @@ var Data = (function () {
       ]
     },
     {
-      id: 'bo6', name: 'BLACK OPS 6', tag: 'MULTIPLAYER // ZOMBIES', art: 'bo6',
+      id: 'bo6', name: 'BLACK OPS 6', tag: 'Multiplayer and Zombies', art: 'bo6',
       config: true, codes: ['cod24'],
       blurb: 'The worker-count tweak is sourced for this game (Hone, Fpstweak) and is applied to its settings file.',
       sourceNote: 'Two readable guides: Dexerto (updated Aug 2025) and Hone (updated Aug 2026). Destructoid and Dot Esports could not be read, so they are not cited.',
@@ -126,7 +126,7 @@ var Data = (function () {
       ]
     },
     {
-      id: 'bo7', name: 'BLACK OPS 7', tag: 'MULTIPLAYER // ZOMBIES', art: 'bo7',
+      id: 'bo7', name: 'BLACK OPS 7', tag: 'Multiplayer, Zombies and Endgame', art: 'bo7',
       config: true, codes: ['cod25'],
       blurb: 'Kernel-level anti-cheat: this app only edits your own settings file, never the game or its folder.',
       sourceNote: 'Best-covered game: Dot Esports, Dexerto (Apr 2026), Frozen Tweaks (Oct 2026), Hone (Aug 2026). Timesaver was too generic to use.',
@@ -138,7 +138,7 @@ var Data = (function () {
       ]
     },
     {
-      id: 'mw4', name: 'MODERN WARFARE 4', tag: 'MULTIPLAYER // CAMPAIGN', art: 'mw4',
+      id: 'mw4', name: 'MODERN WARFARE 4', tag: 'Multiplayer and Campaign', art: 'mw4',
       config: false, codes: ['cod26'],
       configNote: 'Modern Warfare 4 is brand new, so this app only gives the best-FPS in-game settings for it. Config-file tweaks will be added once more guides cover them. Nothing on your PC is changed for this game.',
       blurb: 'Released Oct 23, 2026. Guides agree on the big levers: ray tracing off, VRAM Scale Target 80 (70 on 8 GB), upscaler on Quality.',
@@ -154,7 +154,9 @@ var Data = (function () {
 
   var FACTCHECK = [
     ['VERIFIED', 'A per-CPU core number in the config file helps FPS and stutter.',
-      'The real key is RendererWorkerCount (there is no literal "CCD" setting). Hone, Fpstweak and Frozen Tweaks describe it for Black Ops 6 and 7. The app picks the number automatically: your performance-core count on Intel hybrid chips, cores minus 1 on other chips, never more than 8. Guides differ by one, so judge by 1% lows, not average FPS. Undo is one click.'],
+      'The real key is RendererWorkerCount (there is no literal "CCD" setting). Hone, Fpstweak and Frozen Tweaks describe it for Black Ops 6 and 7. The app picks the number automatically from the core layout Windows reports: your performance-core count on Intel hybrid chips, cores minus 1 on other chips, no more than one chiplet\'s cores on dual-chiplet Ryzen (Hone: keep threads on one CCD), never more than 8. Guides differ by one, so judge by 1% lows, not average FPS. Undo puts the old value back.'],
+    ['VERIFIED', 'Guides show the line as RendererWorkerCount = "8".',
+      'The real files write it differently per game: RendererWorkerCount:0.0 = "4" in Modern Warfare II, and RendererWorkerCount@0;51989;59387 = 16 in MW III, Black Ops 6 and Black Ops 7, often in two copies (.txt0 and .txt1). The app reads all of these, changes every live copy, keeps the comment and the allowed range, and never touches commented-out lines.'],
     ['NOT APPLIED', 'The same tweak for Modern Warfare 4.',
       'None of the MW4 guides mention a config edit, so the app leaves MW4 files alone.'],
     ['UNVERIFIED', 'It "forces the game onto P-cores" on Intel hybrid CPUs.',
@@ -164,7 +166,7 @@ var Data = (function () {
     ['SINGLE SOURCE', 'The config also has a VideoMemoryScale value matching the in-game VRAM Scale Target.',
       'One article names this key. Off by default, found under Settings > Advanced.'],
     ['VERIFIED', 'The game rewrites the file sometimes.',
-      'Some guides suggest locking the file read-only, but that stops the game saving any menu change. The app does not lock by default. Instead it checks the value each time you open it and shows RE-APPLY if the game changed it back. A lock option remains in Settings > Advanced.'],
+      'Some guides suggest locking the file read-only, but that stops the game saving any menu change. The app does not lock by default. Instead it checks the value whenever you switch back to it and puts it back automatically (or shows Re-apply if you turned that off). A lock option remains in Settings, Advanced.'],
     ['GUIDES DISAGREE', 'Variable Rate Shading, Persistent Effects, Bullet Impacts, upscaler vs CAS on BO7/BO6.',
       'The checklist uses the majority and says in the Note column when guides split. If you disagree with a value, your own testing wins.'],
     ['VERIFIED', 'Windows settings the guides mention.',
@@ -174,7 +176,7 @@ var Data = (function () {
     ['SAFETY', 'Why no kernel-driver hardware tools (PawnIO and similar)?',
       'RICOCHET is a kernel-level anti-cheat, and a second kernel driver adds both ban and crash risk for no benefit here. Windows already reports CPU cores, GPU, video memory and refresh rate through built-in read-only queries, which is all this app uses.'],
     ['SAFETY', 'Will this get me banned?',
-      'The app edits one text value in a settings file in your own user folders, the same as doing it by hand in Notepad. It never touches the game process, memory or install folder. Nobody outside Activision can promise how they treat it, so stay with this one key, keep the automatic backups, and avoid any tool that hooks the game.']
+      'The app edits one value in a settings file in your own user folders, the same as doing it by hand in Notepad, and keeps the rest of the file byte for byte. It never touches the game process, memory or install folder. Nobody outside Activision can promise how they treat it, so stay with this one key, keep the automatic backups, and avoid any tool that hooks the game.']
   ];
 
   return { VERSION: VERSION, GAMES: GAMES, PRESETS: PRESET_INFO, rows: rows, FACTCHECK: FACTCHECK, FILES: FILES };

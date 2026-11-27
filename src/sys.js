@@ -16,21 +16,40 @@ var Sys = (function () {
     tpm: 'tpm.msc'
   };
   var GPU_CLASS = 'SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11cd-bfc1-08002be10318}';
+  var KEEP_BACKUPS = 10;     // newest backups kept per file (the very first one, the original, is always kept too)
 
   // ---------- mock (browser preview only) ----------
+  // The preview copies the real file shapes: MW III / BO6 / BO7 write "Key@a;b;c = value // range", in two copies (txt0 and txt1).
   var mockFiles = {
-    'options.3.cod24.cst': 'SomeSetting = "1"\r\nRendererWorkerCount = "16"\r\nVideoMemoryScale = "0.9"\r\n',
-    'options.4.cod25.cst': 'A = "1"\r\nRendererWorkerCount = "16"\r\nVideoMemoryScale = "0.9"\r\nB = "2"\r\n',
-    's.1.0.cod25.txt': 'NoWorkerKeyHere = "1"\r\n',
-    'options.5.cod26.cst': 'RendererWorkerCount = "12"\r\nVideoMemoryScale = "0.9"\r\n'
+    's.1.0.cod24.txt0': '// Thread count for handling the job queue\r\nRendererWorkerCount@0;51989;59387 = 16 // -1 to 16\r\n// Fraction of GPU memory used for loading textures\r\nVideoMemoryScale@0;19140;20302 = 0.85 // 0.0 to 2.0\r\n',
+    's.1.0.cod24.txt1': '// Thread count for handling the job queue\r\nRendererWorkerCount@0;51989;59387 = 16 // -1 to 16\r\n// Fraction of GPU memory used for loading textures\r\nVideoMemoryScale@0;19140;20302 = 0.85 // 0.0 to 2.0\r\n',
+    'options.4.cod25.cst': '// Thread count for handling the job queue\r\nRendererWorkerCount@0;51989;59387 = 16 // -1 to 16\r\nVideoMemoryScale@0;19140;20302 = 0.85 // 0.0 to 2.0\r\n',
+    's.1.0.cod26.txt0': 'RendererWorkerCount@0;51989;59387 = 12 // -1 to 16\r\n'
   };
   var mockRO = {}, mockBackups = [], mockSettings = {};
+  var MOCK_CPUS = {
+    '12700k': ['12th Gen Intel(R) Core(TM) i7-12700K', 12, 20, '8x2:1,4x1:0'],
+    '285k': ['Intel(R) Core(TM) Ultra 9 285K', 24, 24, '8x1:1,16x1:0'],
+    '7800x3d': ['AMD Ryzen 7 7800X3D 8-Core Processor', 8, 16, '8x2:0'],
+    '7900x': ['AMD Ryzen 9 7900X 12-Core Processor', 12, 24, '6x2:0,6x2:0/1'],
+    '9950x3d': ['AMD Ryzen 9 9950X3D 16-Core Processor', 16, 32, '8x2:0,8x2:0/1']
+  };
+  function mockCpuKey() { try { var m = /cpu=([a-z0-9]+)/i.exec(location.hash || ''); return m && MOCK_CPUS[m[1]] ? m[1] : '12700k'; } catch (e) { return '12700k'; } }
+  // builds a fake GetSystemCpuSetInformation answer from "count x threads : efficiencyClass [/ cache]"
+  function mockCpuSets(spec) {
+    var out = [], groups = spec.split(','), core = 0, i, j, t, m;
+    for (i = 0; i < groups.length; i++) {
+      m = /(\d+)x(\d+):(\d+)(?:\/(\d+))?/.exec(groups[i]);
+      for (j = 0; j < parseInt(m[1], 10); j++, core++) for (t = 0; t < parseInt(m[2], 10); t++) out.push('0:' + core + ':' + m[3] + ':' + (m[4] || 0));
+    }
+    return out.join(';') + ';';
+  }
 
   // ---------- real helpers ----------
   function docsDir() { return shell.SpecialFolders('MyDocuments'); }
   function playersDir() { return docsDir() + '\\Call of Duty\\players'; }
   function localPlayersDir() { return shell.ExpandEnvironmentStrings('%LOCALAPPDATA%') + '\\Activision\\Call of Duty\\players'; }
-  // Guides name two places for the settings file, so both are checked.
+  // Guides name two places for the settings files, so both are checked (and one level of sub-folders in each).
   function locations() { return [{ loc: 'docs', dir: playersDir() }, { loc: 'local', dir: localPlayersDir() }]; }
   function backupDir() {
     var d = dataDir() + '\\backups';
@@ -60,23 +79,29 @@ var Sys = (function () {
     return d;
   }
 
+  // Reads a text file and remembers its encoding so it can be written back the same way.
+  //   enc: 'utf8' (no BOM), 'utf8bom', or 'utf16' (UTF-16 LE with BOM)
   function readRaw(path) {
-    var s = new ActiveXObject('ADODB.Stream');
+    var s = new ActiveXObject('ADODB.Stream'), head, enc, text, u;
     s.Type = 2; s.Charset = 'iso-8859-1'; s.Open(); s.LoadFromFile(path);
-    var latin = s.ReadText(); s.Close();
-    var hasBom = latin.substr(0, 3) === '\u00EF\u00BB\u00BF';
-    var u = new ActiveXObject('ADODB.Stream');
-    u.Type = 2; u.Charset = 'utf-8'; u.Open(); u.LoadFromFile(path);
-    var text = u.ReadText(); u.Close();
-    return { text: text, bom: hasBom, bad: text.indexOf('\uFFFD') >= 0 };
+    head = s.ReadText(3); s.Close();
+    if (head.substr(0, 2) === '\u00FF\u00FE') enc = 'utf16';
+    else if (head === '\u00EF\u00BB\u00BF') enc = 'utf8bom';
+    else enc = 'utf8';
+    u = new ActiveXObject('ADODB.Stream');
+    u.Type = 2; u.Charset = enc === 'utf16' ? 'unicode' : 'utf-8'; u.Open(); u.LoadFromFile(path);
+    text = u.ReadText(); u.Close();
+    if (text.charAt(0) === '\uFEFF') text = text.substr(1);          // never carry the BOM inside the text
+    return { text: text, enc: enc, bom: enc !== 'utf8', bad: text.indexOf('\uFFFD') >= 0 || (enc !== 'utf16' && text.indexOf('\u0000') >= 0) };
   }
 
-  function writeRaw(path, text, bom) {
-    var a = new ActiveXObject('ADODB.Stream');
-    a.Type = 2; a.Charset = 'utf-8'; a.Open(); a.WriteText(text);
-    if (bom) { a.SaveToFile(path, 2); a.Close(); return; }
-    a.Position = 0; a.Type = 1; a.Position = 3;       // ADODB always writes a BOM for utf-8: skip 3 bytes
-    var b = new ActiveXObject('ADODB.Stream');
+  function writeRaw(path, text, enc) {
+    if (enc === true) enc = 'utf8bom'; else if (!enc) enc = 'utf8';
+    var a = new ActiveXObject('ADODB.Stream'), b;
+    a.Type = 2; a.Charset = enc === 'utf16' ? 'unicode' : 'utf-8'; a.Open(); a.WriteText(text);
+    if (enc !== 'utf8') { a.SaveToFile(path, 2); a.Close(); return; }   // ADODB writes the BOM itself for these
+    a.Position = 0; a.Type = 1; a.Position = 3;                        // utf-8 without BOM: skip the 3 BOM bytes ADODB always adds
+    b = new ActiveXObject('ADODB.Stream');
     b.Type = 1; b.Open(); a.CopyTo(b); a.Close();
     b.SaveToFile(path, 2); b.Close();
   }
@@ -84,7 +109,36 @@ var Sys = (function () {
   function isRO(path) { return (fso.GetFile(path).Attributes & 1) === 1; }
   function setRO(path, on) {
     var f = fso.GetFile(path);
-    if (on) f.Attributes = f.Attributes | 1; else if (f.Attributes & 1) f.Attributes = f.Attributes - 1;
+    if (on) { if (!(f.Attributes & 1)) f.Attributes = f.Attributes | 1; }
+    else if (f.Attributes & 1) f.Attributes = f.Attributes - 1;
+  }
+
+  // Writes the new text through a temp file next to the original, checks it, then swaps it in and checks again.
+  // If anything goes wrong after the original was touched, the original text is written back.
+  function safeWrite(path, text, original, enc) {
+    var tmp = path + '.codcfg-tmp', chk;
+    try {
+      writeRaw(tmp, text, enc);
+      chk = readRaw(tmp);
+      if (chk.text !== text) throw new Error('the new file did not read back correctly');
+      fso.CopyFile(tmp, path, true);
+      chk = readRaw(path);
+      if (chk.text !== text) throw new Error('the settings file did not read back correctly after saving');
+    } catch (e) {
+      try { if (readRaw(path).text !== original) writeRaw(path, original, enc); } catch (e2) { }
+      try { if (fso.FileExists(tmp)) fso.DeleteFile(tmp, true); } catch (e3) { }
+      throw e;
+    }
+    try { fso.DeleteFile(tmp, true); } catch (e4) { }
+  }
+
+  function describe(f, text, ro) {
+    var w = Core.inspect(text, Core.KEY), v = Core.inspect(text, Core.VRAM_KEY);
+    return {
+      loc: f.loc, name: f.name, path: f.path, code: f.code, sub: f.sub || '', ro: ro, modified: f.modified || '',
+      hasKey: w.found, value: w.value, count: w.count, consistent: w.consistent, range: w.range,
+      hasVram: v.found, vramValue: v.value, vramRange: v.range
+    };
   }
 
   // ----- detection helpers (all read-only) -----
@@ -248,6 +302,99 @@ var Sys = (function () {
     } catch (e) { return null; }
   }
 
+
+  // Exact core layout from Windows (GetSystemCpuSetInformation): per logical processor its core, efficiency class
+  // and last-level cache. Read-only, through PowerShell with a tiny inline C# helper. Returns "" if unavailable.
+  var CPUSET_PS = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -TypeDefinition @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "public static class CodCfgCpuSets {",
+    "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
+    "  static extern bool GetSystemCpuSetInformation(IntPtr info, int length, out int returned, IntPtr process, int flags);",
+    "  public static string Read() {",
+    "    int len = 0;",
+    "    GetSystemCpuSetInformation(IntPtr.Zero, 0, out len, IntPtr.Zero, 0);",
+    "    if (len <= 0) return \"\";",
+    "    IntPtr buf = Marshal.AllocHGlobal(len);",
+    "    try {",
+    "      if (!GetSystemCpuSetInformation(buf, len, out len, IntPtr.Zero, 0)) return \"\";",
+    "      System.Text.StringBuilder sb = new System.Text.StringBuilder();",
+    "      int off = 0;",
+    "      while (off + 20 <= len) {",
+    "        int size = Marshal.ReadInt32(buf, off);",
+    "        int type = Marshal.ReadInt32(buf, off + 4);",
+    "        if (size <= 0) break;",
+    "        if (type == 0) {",
+    "          sb.Append(Marshal.ReadInt16(buf, off + 12)).Append(':')",
+    "            .Append(Marshal.ReadByte(buf, off + 15)).Append(':')",
+    "            .Append(Marshal.ReadByte(buf, off + 18)).Append(':')",
+    "            .Append(Marshal.ReadByte(buf, off + 16)).Append(';');",
+    "        }",
+    "        off += size;",
+    "      }",
+    "      return sb.ToString();",
+    "    } finally { Marshal.FreeHGlobal(buf); }",
+    "  }",
+    "}",
+    "'@",
+    "[CodCfgCpuSets]::Read()"
+  ].join('\r\n');
+  function cpuSets() {
+    var tmp = shell.ExpandEnvironmentStrings('%TEMP%'), ps1 = tmp + '\\cod_cfg_cpusets.ps1', out = tmp + '\\cod_cfg_cpusets.txt', txt = '', f, ts;
+    try {
+      f = fso.CreateTextFile(ps1, true, false); f.Write(CPUSET_PS); f.Close();
+      shell.Run('cmd /c powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ps1 + '" > "' + out + '" 2>nul', 0, true);
+      if (fso.FileExists(out)) { ts = fso.OpenTextFile(out, 1, false); txt = ts.AtEndOfStream ? '' : ts.ReadAll(); ts.Close(); }
+    } catch (e) { note('CPU core layout could not be read: ' + errText(e)); }
+    try { if (fso.FileExists(ps1)) fso.DeleteFile(ps1, true); if (fso.FileExists(out)) fso.DeleteFile(out, true); } catch (e2) { }
+    txt = String(txt || '').replace(/\s+/g, '');
+    if (!/^(\d+:\d+:\d+:\d+;)+$/.test(txt)) { if (txt) note('CPU core layout answer was not understood'); return ''; }
+    return txt;
+  }
+
+  // Lists the candidate settings files in one folder (and its direct sub-folders).
+  function listFiles(loc, dir, out) {
+    var stack = [{ dir: dir, sub: '', depth: 0 }], cur, en, f, sf;
+    while (stack.length) {
+      cur = stack.shift();
+      en = new Enumerator(fso.GetFolder(cur.dir).Files);
+      for (; !en.atEnd(); en.moveNext()) {
+        f = en.item();
+        if (!Core.isSettingsFile(f.Name)) continue;
+        var mod = ''; try { mod = String(new Date(f.DateLastModified).getTime()); } catch (e0) { }
+        out.push({ loc: loc, name: f.Name, path: f.Path, code: Core.gameCode(f.Name), sub: cur.sub, ro: (f.Attributes & 1) === 1, modified: mod });
+      }
+      if (cur.depth === 0) {
+        try {
+          sf = new Enumerator(fso.GetFolder(cur.dir).SubFolders);
+          for (; !sf.atEnd(); sf.moveNext()) stack.push({ dir: sf.item().Path, sub: sf.item().Name, depth: 1 });
+        } catch (e1) { }
+      }
+    }
+  }
+
+  function backupPrefix(file) { return (file.loc || 'docs') + '__' + (file.sub ? file.sub.replace(/[^A-Za-z0-9_.\-]/g, '_') + '__' : '') + file.name + '.'; }
+  function backupsOf(file) {
+    var pre = backupPrefix(file), en = new Enumerator(fso.GetFolder(backupDir()).Files), list = [], n;
+    for (; !en.atEnd(); en.moveNext()) {
+      n = en.item().Name;
+      if (n.indexOf(pre) === 0 && /\.\d{8}-\d{6}(-\d+)?\.bak$/.test(n)) list.push(n);
+    }
+    // oldest first; "stamp-2.bak" (second backup in the same second) sorts after "stamp.bak"
+    function key(x) { var m = /\.(\d{8}-\d{6})(?:-(\d+))?\.bak$/.exec(x); return m[1] + ('0000' + (m[2] || '0')).slice(-4); }
+    list.sort(function (x, y) { var a = key(x), b = key(y); return a < b ? -1 : (a > b ? 1 : 0); });
+    return list;
+  }
+  // Keeps the first backup ever made (the untouched original) and the newest KEEP_BACKUPS.
+  function pruneBackups(file) {
+    try {
+      var list = backupsOf(file), i;
+      for (i = 1; i < list.length - KEEP_BACKUPS; i++) fso.DeleteFile(backupDir() + '\\' + list[i], true);
+    } catch (e) { }
+  }
+
   return {
     isReal: function () { return real; },
     appDir: function () { return real ? appDir() : '(browser preview)'; },
@@ -258,10 +405,12 @@ var Sys = (function () {
     sources: function () { return real ? probe().src : { cpu: 'preview', gpu: 'preview', display: 'preview', ram: 'preview', os: 'preview' }; },
 
     cpu: function () {
-      if (!real) return { name: '12th Gen Intel(R) Core(TM) i7-12700K', cores: 12, logical: 20 };
+      if (!real) { var m = MOCK_CPUS[mockCpuKey()]; return { name: m[0], cores: m[1], logical: m[2] }; }
       var c = probe().cpu;
       return { name: String(c.name || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''), cores: c.cores, logical: c.logical };
     },
+    // "group:core:efficiencyClass:cache;" per logical processor, or "" when Windows could not be asked
+    cpuSets: function () { return real ? cpuSets() : mockCpuSets(MOCK_CPUS[mockCpuKey()][3]); },
 
     // returns { gpu:{name,vramGB,vendor,integrated,driver}|null, display:{w,h,hz}, ramGB, secureBoot, os, detected:bool }
     hardware: function () {
@@ -275,13 +424,14 @@ var Sys = (function () {
       return hw;
     },
 
+    // cod.exe is the shared launcher for BO6 / BO7 / Warzone; older titles use their own names.
+    // (Patterns are exact enough that apps like VS Code's code.exe never count.)
     gameRunning: function () {
-      if (!real) return false;
+      if (!real) return !!window.__mockRunning;
       try {
-        return wmiRows("select Name from Win32_Process where Name = 'cod.exe' or Name like 'BlackOps%' or Name like 'ModernWarfare%' or Name like 'Warzone%'").length > 0;
+        return wmiRows("select Name from Win32_Process where Name = 'cod.exe' or Name like 'cod2_%.exe' or Name like 'BlackOps%.exe' or Name like 'ModernWarfare%.exe' or Name like 'Warzone%.exe'").length > 0;
       } catch (err) {
-        // WMI not usable: fall back to tasklist
-        try { return /cod\.exe|BlackOps|ModernWarfare|Warzone/i.test(shellOut('tasklist /fo csv /nh')); } catch (e2) { return false; }
+        try { return /"(cod|cod2\d[^"]*|BlackOps[^"]*|ModernWarfare[^"]*|Warzone[^"]*)\.exe"/i.test(shellOut('tasklist /fo csv /nh')); } catch (e2) { return false; }
       }
     },
 
@@ -296,15 +446,15 @@ var Sys = (function () {
       } catch (e) { return {}; }
     },
     saveSettings: function (obj) {
-      if (!real) { mockSettings = obj; return true; }
-      try { writeRaw(dataDir() + '\\settings.json', JSON.stringify(obj), false); return true; } catch (e) { return false; }
+      if (!real) { mockSettings = JSON.parse(JSON.stringify(obj)); return true; }
+      try { writeRaw(dataDir() + '\\settings.json', JSON.stringify(obj), 'utf8'); return true; } catch (e) { return false; }
     },
 
     // ---------- custom art (drop images into the assets folder next to the app) ----------
     assetsDir: function () { return real ? appDir() + '\\assets' : '(browser preview)\\assets'; },
     imageFor: function (name) {
       var ext = ['jpg', 'jpeg', 'png'], i;
-      if (!real) return 'assets/' + name + '.jpg';   // browser preview only
+      if (!real) return 'assets/' + name + (name === 'logo' ? '.png' : '.jpg');   // browser preview only
       for (i = 0; i < ext.length; i++) if (fso.FileExists(appDir() + '\\assets\\' + name + '.' + ext[i])) return 'assets/' + name + '.' + ext[i];
       return null;
     },
@@ -317,37 +467,35 @@ var Sys = (function () {
     folder: function () { return real ? playersDir() : 'C:\\Users\\Preview\\Documents\\Call of Duty\\players'; },
     backupFolder: function () { return real ? backupDir() : 'C:\\Users\\Preview\\AppData\\Roaming\\CoDConfigurator\\backups'; },
 
+    // Finds every settings file and reads both values from it. Nothing is written.
     scan: function () {
-      var out = { ok: true, folder: this.folder(), files: [], error: '' }, k, L, j;
-      function info(loc, name, path, code, text, ro) {
-        return { loc: loc, name: name, path: path, code: code, hasKey: Core.hasKey(text), value: Core.getKey(text),
-          hasVram: Core.hasKey(text, Core.VRAM_KEY), vramValue: Core.getKey(text, Core.VRAM_KEY), ro: ro };
-      }
+      var out = { ok: true, folder: this.folder(), files: [], error: '', unreadable: 0 }, k, L, j, list, r, rec;
       if (!real) {
-        for (k in mockFiles) if (mockFiles.hasOwnProperty(k)) out.files.push(info('docs', k, k, Core.gameCode(k), mockFiles[k], !!mockRO[k]));
+        for (k in mockFiles) if (mockFiles.hasOwnProperty(k)) out.files.push(describe({ loc: 'docs', name: k, path: 'C:\\Users\\Preview\\Documents\\Call of Duty\\players\\' + k, code: Core.gameCode(k) }, mockFiles[k], !!mockRO[k]));
         return out;
       }
       try {
-        L = locations();
+        L = locations(); list = [];
         var any = false;
         for (j = 0; j < L.length; j++) {
           if (!fso.FolderExists(L[j].dir)) continue;
           any = true;
-          var en = new Enumerator(fso.GetFolder(L[j].dir).Files);
-          for (; !en.atEnd(); en.moveNext()) {
-            var f = en.item(), code = Core.gameCode(f.Name);
-            if (!code) continue;
-            var rec = { loc: L[j].loc, name: f.Name, path: f.Path, code: code, hasKey: false, value: null, hasVram: false, vramValue: null, ro: (f.Attributes & 1) === 1 };
-            try { var r = readRaw(f.Path); if (!r.bad) rec = info(L[j].loc, f.Name, f.Path, code, r.text, rec.ro); } catch (e2) { }
-            out.files.push(rec);
-          }
+          try { listFiles(L[j].loc, L[j].dir, list); } catch (e1) { note('Could not list ' + L[j].dir + ': ' + errText(e1)); }
         }
-        if (!any) { out.ok = false; out.error = 'No Call of Duty settings folder found yet. Launch a game once, reach the main menu, close it, then press Re-detect.'; }
+        for (j = 0; j < list.length; j++) {
+          rec = describe(list[j], '', list[j].ro);
+          try {
+            r = readRaw(list[j].path);
+            if (r.bad) { rec.unreadable = true; out.unreadable++; }
+            else rec = describe(list[j], r.text, list[j].ro);
+          } catch (e2) { rec.unreadable = true; out.unreadable++; }
+          out.files.push(rec);
+        }
+        if (!any) { out.ok = false; out.error = 'No Call of Duty settings folder yet. Start a game once, reach the main menu, close it, then press Re-check.'; }
       } catch (err) { out.ok = false; out.error = String(err.message || err); }
       return out;
     },
 
-    // ---------- read-only Windows checks (nothing is changed) ----------
     winChecks: function () {
       var out = [], v, t, rows;
       if (!real) {
@@ -406,62 +554,105 @@ var Sys = (function () {
       try { shell.Run(SETTINGS_PAGES[id]); } catch (e) { }
     },
 
+    // Full copy of the file before every change. Returns the backup's name.
     backup: function (file) {
       var stamp = Core.stamp();
       if (!real) { mockBackups.push({ name: file.name, stamp: stamp, text: mockFiles[file.name] }); return file.name + '.' + stamp + '.bak'; }
-      var dest = backupDir() + '\\' + (file.loc || 'docs') + '__' + file.name + '.' + stamp + '.bak';
+      var dest = backupDir() + '\\' + backupPrefix(file) + stamp + '.bak', n = 1;
+      while (fso.FileExists(dest)) dest = backupDir() + '\\' + backupPrefix(file) + stamp + '-' + (n++) + '.bak';
       fso.CopyFile(file.path, dest, false);
       try { setRO(dest, false); } catch (e) { }
-      return dest;
+      pruneBackups(file);
+      return dest.substr(dest.lastIndexOf('\\') + 1);
     },
 
-    // pairs = [{ key, value }]. Writes only those values, verifies by re-reading, returns { ok, changes:[{key,before,after}], error }
-    applyValues: function (file, pairs, lock) {
-      var i, res, text, changes = [];
-      if (!real) {
-        text = mockFiles[file.name];
+    // pairs = [{ key, value }]. Changes only those values (every copy of the key in the file), then re-reads the file
+    // and checks that the result is exactly what was intended. On any failure the file is put back as it was.
+    //   ro: 'lock' = leave read-only afterwards, 'unlock' = leave writable, 'keep' = same as before
+    // Returns { ok, changes:[{key,before,after}], error, wasRO }
+    applyValues: function (file, pairs, ro) {
+      var i, res, text, original, changes = [], wasRO = false, enc = 'utf8', val;
+      function plan(src) {
+        var t = src, list = [];
         for (i = 0; i < pairs.length; i++) {
-          res = Core.setKey(text, pairs[i].key, pairs[i].value);
-          if (!res.found) return { ok: false, error: pairs[i].key + ' not found.' };
-          text = res.text; changes.push({ key: pairs[i].key, before: res.old, after: pairs[i].value });
+          val = Core.clampToRange(String(pairs[i].value), Core.inspect(t, pairs[i].key).range);
+          res = Core.setKey(t, pairs[i].key, val);
+          if (!res.found) return { error: pairs[i].key + ' is not in ' + file.name + '. Nothing was changed.' };
+          t = res.text; list.push({ key: pairs[i].key, before: res.old, after: val, copies: res.count });
         }
-        mockFiles[file.name] = text; mockRO[file.name] = !!lock;
-        return { ok: true, changes: changes };
+        return { text: t, list: list };
+      }
+      if (!real) {
+        var pm = plan(mockFiles[file.name] || '');
+        if (pm.error) return { ok: false, error: pm.error };
+        wasRO = !!mockRO[file.name];
+        mockFiles[file.name] = pm.text;
+        mockRO[file.name] = ro === 'lock' ? true : (ro === 'unlock' ? false : wasRO);
+        return { ok: true, changes: pm.list, wasRO: wasRO };
       }
       try {
-        if (isRO(file.path)) setRO(file.path, false);
+        if (!fso.FileExists(file.path)) return { ok: false, error: file.name + ' no longer exists. Press Re-check.' };
+        wasRO = isRO(file.path);
         var raw = readRaw(file.path);
-        if (raw.bad) return { ok: false, error: 'File is not plain UTF-8 text; refusing to edit it.' };
-        text = raw.text;
-        for (i = 0; i < pairs.length; i++) {
-          res = Core.setKey(text, pairs[i].key, pairs[i].value);
-          if (!res.found) return { ok: false, error: pairs[i].key + ' not found in this file; nothing changed.' };
-          text = res.text; changes.push({ key: pairs[i].key, before: res.old, after: pairs[i].value });
+        if (raw.bad) return { ok: false, error: file.name + ' is not plain text, so it was left alone.' };
+        original = raw.text; enc = raw.enc;
+        var p = plan(original);
+        if (p.error) return { ok: false, error: p.error };
+        changes = p.list; text = p.text;
+        if (text !== original) {
+          if (wasRO) setRO(file.path, false);
+          try { safeWrite(file.path, text, original, enc); }
+          catch (we) { try { if (wasRO) setRO(file.path, true); } catch (e5) { } return { ok: false, error: file.name + ': ' + errText(we) + '. The file was put back as it was.' }; }
+          // final check, value by value
+          var check = readRaw(file.path).text;
+          for (i = 0; i < changes.length; i++) {
+            if (!Core.sameValue(Core.getKey(check, changes[i].key), changes[i].after)) {
+              try { safeWrite(file.path, original, check, enc); } catch (e6) { }
+              try { if (wasRO) setRO(file.path, true); } catch (e7) { }
+              return { ok: false, error: 'Could not confirm ' + changes[i].key + ' in ' + file.name + '. The file was put back as it was.' };
+            }
+          }
         }
-        writeRaw(file.path, text, raw.bom);
-        var check = readRaw(file.path);
-        for (i = 0; i < pairs.length; i++) {
-          if (String(Core.getKey(check.text, pairs[i].key)) !== String(pairs[i].value)) return { ok: false, error: 'Verification failed for ' + pairs[i].key + '. Restore the backup.' };
-        }
-        if (lock) setRO(file.path, true);
-        return { ok: true, changes: changes };
-      } catch (err) { return { ok: false, error: String(err.message || err) }; }
+        if (ro === 'lock' || (ro !== 'unlock' && wasRO)) setRO(file.path, true);
+        else if (ro === 'unlock') setRO(file.path, false);
+        return { ok: true, changes: changes, wasRO: wasRO };
+      } catch (err) {
+        try { if (wasRO && fso.FileExists(file.path)) setRO(file.path, true); } catch (e8) { }
+        return { ok: false, error: file.name + ': ' + errText(err) };
+      }
+    },
+
+    // Reads one value out of a file's oldest backup (the original, before this app ever changed it).
+    originalValues: function (file) {
+      var out = {}, list, raw, i;
+      if (!real) {
+        for (i = 0; i < mockBackups.length; i++) if (mockBackups[i].name === file.name) { raw = mockBackups[i].text; break; }
+        if (!raw) return null;
+        out[Core.KEY] = Core.getKey(raw, Core.KEY); out[Core.VRAM_KEY] = Core.getKey(raw, Core.VRAM_KEY);
+        return out;
+      }
+      try {
+        list = backupsOf(file);
+        if (!list.length) return null;
+        raw = readRaw(backupDir() + '\\' + list[0]);
+        if (raw.bad) return null;
+        out[Core.KEY] = Core.getKey(raw.text, Core.KEY); out[Core.VRAM_KEY] = Core.getKey(raw.text, Core.VRAM_KEY);
+        return out;
+      } catch (e) { return null; }
     },
 
     latestBackup: function (file) {
       var best = null, i;
       if (!real) { for (i = 0; i < mockBackups.length; i++) if (mockBackups[i].name === file.name) best = mockBackups[i]; return best ? best.stamp : null; }
-      try {
-        var pre = (file.loc || 'docs') + '__' + file.name + '.';
-        var en = new Enumerator(fso.GetFolder(backupDir()).Files), bestName = '';
-        for (; !en.atEnd(); en.moveNext()) {
-          var n = en.item().Name;
-          if (n.indexOf(pre) === 0 && /\.bak$/.test(n) && n > bestName) bestName = n;
-        }
-        return bestName ? bestName : null;
-      } catch (e) { return null; }
+      try { var list = backupsOf(file); return list.length ? list[list.length - 1] : null; } catch (e) { return null; }
+    },
+    backupCount: function (file) {
+      var n = 0, i;
+      if (!real) { for (i = 0; i < mockBackups.length; i++) if (mockBackups[i].name === file.name) n++; return n; }
+      try { return backupsOf(file).length; } catch (e) { return 0; }
     },
 
+    // Puts the whole file back from its newest backup (last resort; Undo only changes the values themselves).
     restore: function (file) {
       if (!real) {
         var b = null, i; for (i = 0; i < mockBackups.length; i++) if (mockBackups[i].name === file.name) b = mockBackups[i];
@@ -470,7 +661,7 @@ var Sys = (function () {
       }
       try {
         var name = this.latestBackup(file);
-        if (!name) return { ok: false, error: 'No backup found for this file.' };
+        if (!name) return { ok: false, error: 'No backup found for ' + file.name + '.' };
         if (isRO(file.path)) setRO(file.path, false);
         fso.CopyFile(backupDir() + '\\' + name, file.path, true);
         try { setRO(file.path, false); } catch (e) { }
